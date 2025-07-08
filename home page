@@ -1,0 +1,1118 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, onSnapshot, query, addDoc, doc, setDoc, updateDoc } from 'firebase/firestore'; // Import updateDoc
+import { Search, Filter, PlusCircle, Copy, Loader2, Info, XCircle, Edit } from 'lucide-react'; // Using lucide-react for icons
+
+// Ensure Tailwind CSS is available in the environment.
+// This code assumes Tailwind CSS is configured.
+
+// Firebase configuration and app ID are provided by the environment.
+// DO NOT modify these global variable names.
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+// Initialize Firebase outside of the component to avoid re-initialization
+let app;
+let db;
+let auth;
+
+try {
+  app = initializeApp(firebaseConfig);
+  db = getFirestore(app);
+  auth = getAuth(app);
+} catch (error) {
+  console.error("Failed to initialize Firebase:", error);
+  // Handle initialization error gracefully, e.g., display a message to the user
+}
+
+// Demo data to pre-populate if the database is empty
+const demoCases = [
+  {
+    caseName: "Sahur “Ít ngọt, nhiều cảm”",
+    brand: "Sahur",
+    industry: "FMCG – Sweet Drink",
+    round: "R1",
+    coreProblem: "Awareness cao nhưng Conversion thấp",
+    rootCause: "People nhớ hương vị, sợ ngọt, coi sản phẩm “trẻ con”",
+    solutionDNA: "Emotional + Slight Functional (trải nghiệm mới)",
+    strengths: ["Insight gốc tốt", "Đặt Big Idea rõ, tactics đa dạng"],
+    weaknesses: ["Không gỡ “ít ngọt” vs “cảm xúc” (lệch problem)", "Quá nhiều hoạt động, thiếu chọn lọc"],
+    judgesQuote: "“Muốn emotional drive thì root cause phải đong đo tỉ lệ functional vs emotional!”",
+    hyperlinkSlide: "https://example.com/sahur-slide-link", // Placeholder link
+    assetLink: "",
+    tags: ["BigIdea", "Emotional", "Functional", "fmcg_alpenliebe"],
+    previewImageUrl: "https://placehold.co/300x200/aabbcc/ffffff?text=Sahur+Slide+Preview", // Placeholder preview image
+    oneLineSummary: "Chiến dịch tái định vị thương hiệu Sahur với thông điệp ít ngọt và cảm xúc." // New field
+  },
+  {
+    caseName: "Thăng Sắc “Hồi tưởng Caramel”",
+    brand: "Thăng Sắc",
+    industry: "FMCG – Snack",
+    round: "R1",
+    coreProblem: "Decline volume ở nhóm trưởng thành",
+    rootCause: "Brand nói hoài về tuổi thơ, quên dịp tiêu dùng thật",
+    solutionDNA: "Emotional nặng, thiếu functional occasion",
+    strengths: ["Câu chuyện gợi ký ức mạnh", "Visual nostalgic hút mắt"],
+    weaknesses: ["KPI mơ hồ", "Chưa link Nutty SKU với Insight"],
+    judgesQuote: "“Xác định lại: nhớ Caramel cũ hay muốn mua Nutty mới?”",
+    hyperlinkSlide: "https://example.com/thang-sac-slide-link", // Placeholder link
+    assetLink: "",
+    tags: ["BigIdea", "Emotional", "Nostalgic", "fmcg_alpenliebe"],
+    previewImageUrl: "https://placehold.co/300x200/ccbbaa/ffffff?text=Thang+Sac+Slide+Preview", // Placeholder preview image
+    oneLineSummary: "Thăng Sắc tìm cách kết nối lại với nhóm khách hàng trưởng thành thông qua ký ức caramel." // New field
+  }
+];
+
+// Helper function to copy text to clipboard
+const copyToClipboard = (text) => {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand('copy');
+    console.log('Text copied to clipboard!');
+    return true;
+  } catch (err) {
+    console.error('Failed to copy text: ', err);
+    return false;
+  } finally {
+    document.body.removeChild(textarea);
+  }
+};
+
+// Custom Modal Component for messages
+const Modal = ({ message, type, onClose }) => {
+  const bgColor = type === 'success' ? 'bg-green-100 border-green-400 text-green-700' : 'bg-red-100 border-red-400 text-red-700';
+  const icon = type === 'success' ? <Info className="h-5 w-5 text-green-500" /> : <XCircle className="h-5 w-5 text-red-500" />;
+
+  return (
+    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className={`relative ${bgColor} border rounded-lg shadow-lg p-6 max-w-sm w-full mx-auto`}>
+        <div className="flex items-center mb-4">
+          {icon}
+          <p className="ml-3 font-semibold">{message}</p>
+        </div>
+        <button
+          onClick={onClose}
+          className="absolute top-3 right-3 text-gray-500 hover:text-gray-700 focus:outline-none"
+          aria-label="Close"
+        >
+          <XCircle className="h-6 w-6" />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// Component for adding a new case study
+const AddCaseForm = ({ userId, dbInstance, onClose, showModal }) => {
+  const [caseName, setCaseName] = useState('');
+  const [brand, setBrand] = useState('');
+  const [industry, setIndustry] = useState('');
+  const [round, setRound] = useState('R1'); // Default to R1
+  const [coreProblem, setCoreProblem] = useState('');
+  const [rootCause, setRootCause] = useState('');
+  const [solutionDNA, setSolutionDNA] = useState('Functional'); // Default to Functional
+  const [strengths, setStrengths] = useState(''); // Comma-separated string
+  const [weaknesses, setWeaknesses] = useState(''); // Comma-separated string
+  const [judgesQuote, setJudgesQuote] = useState('');
+  const [hyperlinkSlide, setHyperlinkSlide] = useState('');
+  const [assetLink, setAssetLink] = useState('');
+  const [tags, setTags] = useState(''); // Comma-separated string
+  const [previewImageUrl, setPreviewImageUrl] = useState(''); // New state for preview image URL
+  const [oneLineSummary, setOneLineSummary] = useState(''); // New state for 1-line summary
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+
+    if (!dbInstance || !userId) {
+      showModal("Database not ready. Please try again.", "error");
+      setLoading(false);
+      return;
+    }
+
+    // Convert comma-separated strings to arrays
+    const strengthsArray = strengths.split(',').map(s => s.trim()).filter(s => s !== '');
+    const weaknessesArray = weaknesses.split(',').map(w => w.trim()).filter(w => w !== '');
+    const tagsArray = tags.split(',').map(t => t.trim()).filter(t => t !== '');
+
+    const newCase = {
+      caseName,
+      brand,
+      industry,
+      round,
+      coreProblem,
+      rootCause,
+      solutionDNA,
+      strengths: strengthsArray,
+      weaknesses: weaknessesArray,
+      judgesQuote,
+      hyperlinkSlide,
+      assetLink,
+      tags: tagsArray,
+      previewImageUrl,
+      oneLineSummary, // Include the new field
+      createdAt: new Date().toISOString() // Add a timestamp
+    };
+
+    try {
+      const casesCollectionRef = collection(dbInstance, `artifacts/${appId}/users/${userId}/caseStudies`);
+      await addDoc(casesCollectionRef, newCase);
+      showModal("Case study added successfully!", "success");
+      // Clear form fields
+      setCaseName('');
+      setBrand('');
+      setIndustry('');
+      setRound('R1');
+      setCoreProblem('');
+      setRootCause('');
+      setSolutionDNA('Functional');
+      setStrengths('');
+      setWeaknesses('');
+      setJudgesQuote('');
+      setHyperlinkSlide('');
+      setAssetLink('');
+      setTags('');
+      setPreviewImageUrl('');
+      setOneLineSummary(''); // Clear the new field
+      onClose(); // Close the form after submission
+    } catch (e) {
+      console.error("Error adding document: ", e);
+      showModal("Failed to add case study. Please try again.", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-lg p-6 max-w-2xl w-full mx-auto relative overflow-y-auto max-h-[90vh]">
+        <h2 className="text-2xl font-bold text-gray-800 mb-6 text-center">Thêm Case Study Mới</h2>
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 text-gray-500 hover:text-gray-700 focus:outline-none"
+          aria-label="Close"
+        >
+          <XCircle className="h-6 w-6" />
+        </button>
+
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="col-span-full">
+            <label htmlFor="caseName" className="block text-sm font-medium text-gray-700 mb-1">Tên Case Study</label>
+            <input
+              type="text"
+              id="caseName"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={caseName}
+              onChange={(e) => setCaseName(e.target.value)}
+              required
+            />
+          </div>
+
+          <div>
+            <label htmlFor="brand" className="block text-sm font-medium text-gray-700 mb-1">Brand</label>
+            <input
+              type="text"
+              id="brand"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={brand}
+              onChange={(e) => setBrand(e.target.value)}
+              required
+            />
+          </div>
+
+          <div>
+            <label htmlFor="industry" className="block text-sm font-medium text-gray-700 mb-1">Industry</label>
+            <input
+              type="text"
+              id="industry"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={industry}
+              onChange={(e) => setIndustry(e.target.value)}
+              required
+            />
+          </div>
+
+          <div>
+            <label htmlFor="round" className="block text-sm font-medium text-gray-700 mb-1">Vòng</label>
+            <select
+              id="round"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={round}
+              onChange={(e) => setRound(e.target.value)}
+              required
+            >
+              <option value="R1">R1</option>
+              <option value="R2">R2</option>
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor="solutionDNA" className="block text-sm font-medium text-gray-700 mb-1">Solution DNA</label>
+            <select
+              id="solutionDNA"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={solutionDNA}
+              onChange={(e) => setSolutionDNA(e.target.value)}
+              required
+            >
+              <option value="Functional">Functional</option>
+              <option value="Emotional">Emotional</option>
+              <option value="Hybrid">Hybrid</option>
+            </select>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="oneLineSummary" className="block text-sm font-medium text-gray-700 mb-1">Tóm tắt 1 dòng</label>
+            <textarea
+              id="oneLineSummary"
+              rows="1"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={oneLineSummary}
+              onChange={(e) => setOneLineSummary(e.target.value)}
+              required
+            ></textarea>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="coreProblem" className="block text-sm font-medium text-gray-700 mb-1">Core Problem</label>
+            <textarea
+              id="coreProblem"
+              rows="2"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={coreProblem}
+              onChange={(e) => setCoreProblem(e.target.value)}
+              required
+            ></textarea>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="rootCause" className="block text-sm font-medium text-gray-700 mb-1">Root Cause</label>
+            <textarea
+              id="rootCause"
+              rows="2"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={rootCause}
+              onChange={(e) => setRootCause(e.target.value)}
+              required
+            ></textarea>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="strengths" className="block text-sm font-medium text-gray-700 mb-1">Strengths (phân cách bởi dấu phẩy)</label>
+            <textarea
+              id="strengths"
+              rows="3"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={strengths}
+              onChange={(e) => setStrengths(e.target.value)}
+            ></textarea>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="weaknesses" className="block text-sm font-medium text-gray-700 mb-1">Weaknesses (phân cách bởi dấu phẩy)</label>
+            <textarea
+              id="weaknesses"
+              rows="3"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={weaknesses}
+              onChange={(e) => setWeaknesses(e.target.value)}
+            ></textarea>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="judgesQuote" className="block text-sm font-medium text-gray-700 mb-1">Judges Quote</label>
+            <textarea
+              id="judgesQuote"
+              rows="2"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={judgesQuote}
+              onChange={(e) => setJudgesQuote(e.target.value)}
+            ></textarea>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="hyperlinkSlide" className="block text-sm font-medium text-gray-700 mb-1">Hyperlink Slide Gốc</label>
+            <input
+              type="url"
+              id="hyperlinkSlide"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={hyperlinkSlide}
+              onChange={(e) => setHyperlinkSlide(e.target.value)}
+            />
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="assetLink" className="block text-sm font-medium text-gray-700 mb-1">Asset Link (chỉ cho R2)</label>
+            <input
+              type="url"
+              id="assetLink"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={assetLink}
+              onChange={(e) => setAssetLink(e.target.value)}
+            />
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="tags" className="block text-sm font-medium text-gray-700 mb-1">Tags (ví dụ: IMC plan, Digital, Trade, phân cách bởi dấu phẩy)</label>
+            <input
+              type="text"
+              id="tags"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+            />
+          </div>
+
+          {/* New field for preview image URL */}
+          <div className="col-span-full">
+            <label htmlFor="previewImageUrl" className="block text-sm font-medium text-gray-700 mb-1">URL ảnh Preview Slide (tùy chọn)</label>
+            <input
+              type="url"
+              id="previewImageUrl"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={previewImageUrl}
+              onChange={(e) => setPreviewImageUrl(e.target.value)}
+            />
+          </div>
+
+          <div className="col-span-full flex justify-center mt-6">
+            <button
+              type="submit"
+              className="inline-flex items-center px-6 py-3 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition-colors duration-200"
+              disabled={loading}
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                  Đang thêm...
+                </>
+              ) : (
+                <>
+                  <PlusCircle className="h-5 w-5 mr-2" />
+                  Thêm Case Study
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// Component for editing an existing case study
+const EditCaseForm = ({ userId, dbInstance, caseData, onClose, showModal }) => {
+  const [caseName, setCaseName] = useState(caseData.caseName || '');
+  const [brand, setBrand] = useState(caseData.brand || '');
+  const [industry, setIndustry] = useState(caseData.industry || '');
+  const [round, setRound] = useState(caseData.round || 'R1');
+  const [coreProblem, setCoreProblem] = useState(caseData.coreProblem || '');
+  const [rootCause, setRootCause] = useState(caseData.rootCause || '');
+  const [solutionDNA, setSolutionDNA] = useState(caseData.solutionDNA || 'Functional');
+  const [strengths, setStrengths] = useState(caseData.strengths ? caseData.strengths.join(', ') : '');
+  const [weaknesses, setWeaknesses] = useState(caseData.weaknesses ? caseData.weaknesses.join(', ') : '');
+  const [judgesQuote, setJudgesQuote] = useState(caseData.judgesQuote || '');
+  const [hyperlinkSlide, setHyperlinkSlide] = useState(caseData.hyperlinkSlide || '');
+  const [assetLink, setAssetLink] = useState(caseData.assetLink || '');
+  const [tags, setTags] = useState(caseData.tags ? caseData.tags.join(', ') : '');
+  const [previewImageUrl, setPreviewImageUrl] = useState(caseData.previewImageUrl || '');
+  const [oneLineSummary, setOneLineSummary] = useState(caseData.oneLineSummary || ''); // New state for 1-line summary
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+
+    if (!dbInstance || !userId) {
+      showModal("Database not ready. Please try again.", "error");
+      setLoading(false);
+      return;
+    }
+
+    const strengthsArray = strengths.split(',').map(s => s.trim()).filter(s => s !== '');
+    const weaknessesArray = weaknesses.split(',').map(w => w.trim()).filter(w => w !== '');
+    const tagsArray = tags.split(',').map(t => t.trim()).filter(t => t !== '');
+
+    const updatedCase = {
+      caseName,
+      brand,
+      industry,
+      round,
+      coreProblem,
+      rootCause,
+      solutionDNA,
+      strengths: strengthsArray,
+      weaknesses: weaknessesArray,
+      judgesQuote,
+      hyperlinkSlide,
+      assetLink,
+      tags: tagsArray,
+      previewImageUrl,
+      oneLineSummary, // Include the new field
+      updatedAt: new Date().toISOString() // Add an update timestamp
+    };
+
+    try {
+      const caseDocRef = doc(dbInstance, `artifacts/${appId}/users/${userId}/caseStudies`, caseData.id);
+      await updateDoc(caseDocRef, updatedCase);
+      showModal("Case study updated successfully!", "success");
+      onClose(); // Close the form after submission
+    } catch (e) {
+      console.error("Error updating document: ", e);
+      showModal("Failed to update case study. Please try again.", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-lg p-6 max-w-2xl w-full mx-auto relative overflow-y-auto max-h-[90vh]">
+        <h2 className="text-2xl font-bold text-gray-800 mb-6 text-center">Chỉnh sửa Case Study</h2>
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 text-gray-500 hover:text-gray-700 focus:outline-none"
+          aria-label="Close"
+        >
+          <XCircle className="h-6 w-6" />
+        </button>
+
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="col-span-full">
+            <label htmlFor="editCaseName" className="block text-sm font-medium text-gray-700 mb-1">Tên Case Study</label>
+            <input
+              type="text"
+              id="editCaseName"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={caseName}
+              onChange={(e) => setCaseName(e.target.value)}
+              required
+            />
+          </div>
+
+          <div>
+            <label htmlFor="editBrand" className="block text-sm font-medium text-gray-700 mb-1">Brand</label>
+            <input
+              type="text"
+              id="editBrand"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={brand}
+              onChange={(e) => setBrand(e.target.value)}
+              required
+            />
+          </div>
+
+          <div>
+            <label htmlFor="editIndustry" className="block text-sm font-medium text-gray-700 mb-1">Industry</label>
+            <input
+              type="text"
+              id="editIndustry"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={industry}
+              onChange={(e) => setIndustry(e.target.value)}
+              required
+            />
+          </div>
+
+          <div>
+            <label htmlFor="editRound" className="block text-sm font-medium text-gray-700 mb-1">Vòng</label>
+            <select
+              id="editRound"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={round}
+              onChange={(e) => setRound(e.target.value)}
+              required
+            >
+              <option value="R1">R1</option>
+              <option value="R2">R2</option>
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor="editSolutionDNA" className="block text-sm font-medium text-gray-700 mb-1">Solution DNA</label>
+            <select
+              id="editSolutionDNA"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={solutionDNA}
+              onChange={(e) => setSolutionDNA(e.target.value)}
+              required
+            >
+              <option value="Functional">Functional</option>
+              <option value="Emotional">Emotional</option>
+              <option value="Hybrid">Hybrid</option>
+            </select>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="editOneLineSummary" className="block text-sm font-medium text-gray-700 mb-1">Tóm tắt 1 dòng</label>
+            <textarea
+              id="editOneLineSummary"
+              rows="1"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={oneLineSummary}
+              onChange={(e) => setOneLineSummary(e.target.value)}
+              required
+            ></textarea>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="editCoreProblem" className="block text-sm font-medium text-gray-700 mb-1">Core Problem</label>
+            <textarea
+              id="editCoreProblem"
+              rows="2"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={coreProblem}
+              onChange={(e) => setCoreProblem(e.target.value)}
+              required
+            ></textarea>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="editRootCause" className="block text-sm font-medium text-gray-700 mb-1">Root Cause</label>
+            <textarea
+              id="editRootCause"
+              rows="2"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={rootCause}
+              onChange={(e) => setRootCause(e.target.value)}
+              required
+            ></textarea>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="editStrengths" className="block text-sm font-medium text-gray-700 mb-1">Strengths (phân cách bởi dấu phẩy)</label>
+            <textarea
+              id="editStrengths"
+              rows="3"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={strengths}
+              onChange={(e) => setStrengths(e.target.value)}
+            ></textarea>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="editWeaknesses" className="block text-sm font-medium text-gray-700 mb-1">Weaknesses (phân cách bởi dấu phẩy)</label>
+            <textarea
+              id="editWeaknesses"
+              rows="3"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={weaknesses}
+              onChange={(e) => setWeaknesses(e.target.value)}
+            ></textarea>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="editJudgesQuote" className="block text-sm font-medium text-gray-700 mb-1">Judges Quote</label>
+            <textarea
+              id="editJudgesQuote"
+              rows="2"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={judgesQuote}
+              onChange={(e) => setJudgesQuote(e.target.value)}
+            ></textarea>
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="editHyperlinkSlide" className="block text-sm font-medium text-gray-700 mb-1">Hyperlink Slide Gốc</label>
+            <input
+              type="url"
+              id="editHyperlinkSlide"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={hyperlinkSlide}
+              onChange={(e) => setHyperlinkSlide(e.target.value)}
+            />
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="editAssetLink" className="block text-sm font-medium text-gray-700 mb-1">Asset Link (chỉ cho R2)</label>
+            <input
+              type="url"
+              id="editAssetLink"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={assetLink}
+              onChange={(e) => setAssetLink(e.target.value)}
+            />
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="editTags" className="block text-sm font-medium text-gray-700 mb-1">Tags (ví dụ: IMC plan, Digital, Trade, phân cách bởi dấu phẩy)</label>
+            <input
+              type="text"
+              id="editTags"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+            />
+          </div>
+
+          <div className="col-span-full">
+            <label htmlFor="editPreviewImageUrl" className="block text-sm font-medium text-gray-700 mb-1">URL ảnh Preview Slide (tùy chọn)</label>
+            <input
+              type="url"
+              id="editPreviewImageUrl"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              value={previewImageUrl}
+              onChange={(e) => setPreviewImageUrl(e.target.value)}
+            />
+          </div>
+
+          <div className="col-span-full flex justify-center mt-6">
+            <button
+              type="submit"
+              className="inline-flex items-center px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors duration-200"
+              disabled={loading}
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                  Đang cập nhật...
+                </>
+              ) : (
+                <>
+                  <Edit className="h-5 w-5 mr-2" />
+                  Cập nhật Case Study
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+
+const Dashboard = ({ userId, dbInstance, showModal, onEditCase }) => { // Added onEditCase prop
+  const [cases, setCases] = useState([]);
+  const [filteredCases, setFilteredCases] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedBrand, setSelectedBrand] = useState('');
+  const [selectedIndustry, setSelectedIndustry] = useState('');
+  const [selectedRound, setSelectedRound] = useState('');
+  const [selectedTag, setSelectedTag] = useState(''); // New state for tag filter
+  const [brands, setBrands] = useState([]);
+  const [industries, setIndustries] = useState([]);
+  const [allTags, setAllTags] = useState([]); // New state for all unique tags
+  const [loading, setLoading] = useState(true);
+
+  // States for slide preview on hover
+  const [hoveredCaseId, setHoveredCaseId] = useState(null);
+  const [previewPosition, setPreviewPosition] = useState({ x: 0, y: 0 });
+
+  // Fetch data from Firestore
+  useEffect(() => {
+    if (!dbInstance || !userId) {
+      setLoading(false);
+      return;
+    }
+
+    const casesCollectionRef = collection(dbInstance, `artifacts/${appId}/users/${userId}/caseStudies`);
+    const q = query(casesCollectionRef);
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const fetchedCases = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setCases(fetchedCases);
+      setLoading(false);
+
+      // Extract unique brands, industries, and tags for filters
+      const uniqueBrands = [...new Set(fetchedCases.map(c => c.brand))].sort();
+      const uniqueIndustries = [...new Set(fetchedCases.map(c => c.industry))].sort();
+      // Flatten all tags from all cases and get unique values
+      const uniqueTags = [...new Set(fetchedCases.flatMap(c => c.tags || []))].sort();
+
+      setBrands(['', ...uniqueBrands]); // Add empty string for "All" option
+      setIndustries(['', ...uniqueIndustries]); // Add empty string for "All" option
+      setAllTags(['', ...uniqueTags]); // Add empty string for "All" option
+
+      // If no cases exist, add demo data
+      if (fetchedCases.length === 0) {
+        addDemoData(dbInstance, userId);
+      }
+    }, (error) => {
+      console.error("Error fetching cases:", error);
+      showModal("Failed to load cases. Please try again.", "error");
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [userId, dbInstance, showModal]);
+
+  // Function to add demo data to Firestore
+  const addDemoData = async (dbInstance, userId) => {
+    const casesCollectionRef = collection(dbInstance, `artifacts/${appId}/users/${userId}/caseStudies`);
+    for (const demoCase of demoCases) {
+      try {
+        await addDoc(casesCollectionRef, demoCase);
+      } catch (e) {
+        console.error("Error adding demo document: ", e);
+        showModal("Failed to add demo data.", "error");
+      }
+    }
+  };
+
+  // Filter and search logic
+  useEffect(() => {
+    let currentFiltered = cases.filter(caseItem => {
+      const matchesSearch = searchTerm === '' ||
+        Object.values(caseItem).some(value =>
+          (Array.isArray(value) ? value.join(' ') : String(value)).toLowerCase().includes(searchTerm.toLowerCase())
+        );
+
+      const matchesBrand = selectedBrand === '' || caseItem.brand === selectedBrand;
+      const matchesIndustry = selectedIndustry === '' || caseItem.industry === selectedIndustry;
+      const matchesRound = selectedRound === '' || caseItem.round === selectedRound;
+      // New tag filter logic
+      const matchesTag = selectedTag === '' || (caseItem.tags && caseItem.tags.includes(selectedTag));
+
+      return matchesSearch && matchesBrand && matchesIndustry && matchesRound && matchesTag;
+    });
+    setFilteredCases(currentFiltered);
+  }, [searchTerm, selectedBrand, selectedIndustry, selectedRound, selectedTag, cases]); // Add selectedTag to dependencies
+
+  const handleCopy = (text, fieldName) => {
+    const success = copyToClipboard(text);
+    if (success) {
+      showModal(`${fieldName} copied to clipboard!`, 'success');
+    } else {
+      showModal(`Failed to copy ${fieldName}.`, 'error');
+    }
+  };
+
+  // Handle mouse enter for preview
+  const handleMouseEnterCaseName = (e, caseId) => {
+    setHoveredCaseId(caseId);
+    const rect = e.currentTarget.getBoundingClientRect();
+    // Position the preview to the right of the hovered element
+    setPreviewPosition({
+      x: rect.right + 15, // 15px to the right
+      y: rect.top // Align with the top
+    });
+  };
+
+  // Handle mouse leave for preview
+  const handleMouseLeaveCaseName = () => {
+    setHoveredCaseId(null);
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-100">
+        <Loader2 className="h-10 w-10 animate-spin text-blue-500" />
+        <p className="ml-3 text-lg text-gray-700">Đang tải dữ liệu...</p>
+      </div>
+    );
+  }
+
+  const currentHoveredCase = cases.find(c => c.id === hoveredCaseId);
+
+  return (
+    <div className="container mx-auto p-4 md:p-8 bg-gray-50 min-h-screen font-inter">
+      <h1 className="text-4xl font-extrabold text-gray-900 mb-6 text-center">Proposal Resource Hub</h1>
+      <p className="text-center text-gray-600 mb-8">
+        Thư viện cá nhân của bạn về các case study và framework marketing.
+      </p>
+
+      <div className="bg-white p-6 rounded-xl shadow-lg mb-8">
+        <div className="flex flex-col md:flex-row gap-4 mb-6">
+          <div className="relative flex-grow">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Tìm kiếm theo từ khóa..."
+              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition duration-200"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-4">
+            <div className="relative flex-grow">
+              <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <select
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition duration-200 appearance-none"
+                value={selectedBrand}
+                onChange={(e) => setSelectedBrand(e.target.value)}
+              >
+                <option value="">Tất cả Brands</option>
+                {brands.map(brand => (
+                  <option key={brand} value={brand}>{brand}</option>
+                ))}
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+              </div>
+            </div>
+
+            <div className="relative flex-grow">
+              <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <select
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition duration-200 appearance-none"
+                value={selectedIndustry}
+                onChange={(e) => setSelectedIndustry(e.target.value)}
+              >
+                <option value="">Tất cả Industries</option>
+                {industries.map(industry => (
+                  <option key={industry} value={industry}>{industry}</option>
+                ))}
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+              </div>
+            </div>
+
+            <div className="relative flex-grow">
+              <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <select
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition duration-200 appearance-none"
+                value={selectedRound}
+                onChange={(e) => setSelectedRound(e.target.value)}
+              >
+                <option value="">Tất cả Vòng</option>
+                <option value="R1">Vòng 1 (R1)</option>
+                <option value="R2">Vòng 2 (R2)</option>
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+              </div>
+            </div>
+
+            {/* New Tag Filter */}
+            <div className="relative flex-grow">
+              <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <select
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition duration-200 appearance-none"
+                value={selectedTag}
+                onChange={(e) => setSelectedTag(e.target.value)}
+              >
+                <option value="">Tất cả Tags</option>
+                {allTags.map(tag => (
+                  <option key={tag} value={tag}>{tag}</option>
+                ))}
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {filteredCases.length > 0 ? (
+          filteredCases.map(caseItem => (
+            <div key={caseItem.id} className="bg-white p-6 rounded-xl shadow-md border border-gray-200 hover:shadow-lg transition-all duration-300">
+              <div className="flex justify-between items-start mb-2">
+                <h3
+                  className="text-xl font-bold text-gray-800 cursor-pointer relative pr-8" // Added pr-8 for button spacing
+                  onMouseEnter={(e) => handleMouseEnterCaseName(e, caseItem.id)}
+                  onMouseLeave={handleMouseLeaveCaseName}
+                >
+                  {caseItem.caseName}
+                </h3>
+                <button
+                  onClick={() => onEditCase(caseItem)} // Call onEditCase prop
+                  className="p-1 rounded-full text-gray-500 hover:bg-gray-100 hover:text-blue-600 transition-colors"
+                  aria-label="Chỉnh sửa Case Study"
+                  title="Chỉnh sửa Case Study"
+                >
+                  <Edit className="h-5 w-5" />
+                </button>
+              </div>
+              <p className="text-sm text-gray-600 mb-1">
+                <span className="font-semibold">Brand:</span> {caseItem.brand}
+              </p>
+              <p className="text-sm text-gray-600 mb-1">
+                <span className="font-semibold">Industry:</span> {caseItem.industry}
+              </p>
+              <p className="text-sm text-gray-600 mb-4">
+                <span className="font-semibold">Round:</span> {caseItem.round}
+              </p>
+
+              {/* New 1-line summary section */}
+              {caseItem.oneLineSummary && (
+                <div className="mb-4">
+                  <p className="font-semibold text-gray-700 flex items-center mb-1">
+                    Tóm tắt
+                    <button
+                      onClick={() => handleCopy(caseItem.oneLineSummary, 'Tóm tắt')}
+                      className="ml-2 p-1 rounded-full hover:bg-gray-100 transition-colors"
+                      aria-label="Copy Tóm tắt"
+                    >
+                      <Copy className="h-4 w-4 text-gray-500" />
+                    </button>
+                  </p>
+                  <p className="text-gray-800 text-sm italic">{caseItem.oneLineSummary}</p>
+                </div>
+              )}
+
+              <div className="mb-4">
+                <p className="font-semibold text-gray-700 flex items-center mb-1">
+                  Tags
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {caseItem.tags && caseItem.tags.map((tag, idx) => (
+                    <span key={idx} className="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded-full">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {caseItem.hyperlinkSlide && (
+                <a
+                  href={caseItem.hyperlinkSlide}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors duration-200 mt-2"
+                >
+                  Xem Slide
+                  <svg className="ml-2 -mr-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                </a>
+              )}
+            </div>
+          ))
+        ) : (
+          <p className="text-center text-gray-600 col-span-full py-10">Không tìm thấy case study nào phù hợp với tiêu chí của bạn. Hãy thử điều chỉnh bộ lọc.</p>
+        )}
+      </div>
+
+      {/* Slide Preview Overlay */}
+      {hoveredCaseId && currentHoveredCase?.previewImageUrl && (
+        <div
+          className="fixed z-50 p-2 bg-white rounded-lg shadow-xl border border-gray-200"
+          style={{ left: `${previewPosition.x}px`, top: `${previewPosition.y}px` }}
+        >
+          <img
+            src={currentHoveredCase.previewImageUrl}
+            alt="Slide Preview"
+            className="w-64 h-auto rounded-md"
+            onError={(e) => e.target.src = 'https://placehold.co/300x200/cccccc/000000?text=No+Preview'}
+          />
+        </div>
+      )}
+
+      <div className="mt-10 p-6 bg-white rounded-xl shadow-lg">
+        <h2 className="text-2xl font-bold text-gray-800 mb-4">Thông tin người dùng</h2>
+        <p className="text-gray-700 break-words">
+          <span className="font-semibold">ID người dùng của bạn:</span> {userId || 'Chưa xác thực'}
+        </p>
+        <p className="text-gray-700">
+          ID này được sử dụng để lưu trữ dữ liệu riêng tư của bạn một cách an toàn trong Firestore.
+        </p>
+      </div>
+    </div>
+  );
+};
+
+const App = () => {
+  const [userId, setUserId] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [showModal, setShowModal] = useState(false);
+  const [modalMessage, setModalMessage] = useState('');
+  const [modalType, setModalType] = useState('info');
+  const [showAddCaseForm, setShowAddCaseForm] = useState(false); // State to control add form visibility
+  const [editingCase, setEditingCase] = useState(null); // State to hold the case being edited
+
+  const handleShowModal = useCallback((message, type) => {
+    setModalMessage(message);
+    setModalType(type);
+    setShowModal(true);
+    setTimeout(() => setShowModal(false), 3000); // Auto-hide after 3 seconds
+  }, []);
+
+  useEffect(() => {
+    if (!auth) {
+      handleShowModal("Firebase chưa được khởi tạo. Vui lòng kiểm tra console để biết lỗi.", "error");
+      setAuthReady(true); // Mark auth as ready even if failed, to stop loading state
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        setUserId(user.uid);
+        setAuthReady(true);
+      } else {
+        try {
+          // If initialAuthToken is provided, use it. Otherwise, sign in anonymously.
+          if (initialAuthToken) {
+            await signInWithCustomToken(auth, initialAuthToken);
+          } else {
+            await signInAnonymously(auth);
+          }
+        } catch (error) {
+          console.error("Firebase authentication failed:", error);
+          handleShowModal("Xác thực thất bại. Vui lòng thử lại.", "error");
+        } finally {
+          setAuthReady(true);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [handleShowModal]);
+
+  const handleEditCase = (caseItem) => {
+    setEditingCase(caseItem);
+  };
+
+  const handleCloseEditForm = () => {
+    setEditingCase(null);
+  };
+
+  if (!authReady) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-100">
+        <Loader2 className="h-10 w-10 animate-spin text-blue-500" />
+        <p className="ml-3 text-lg text-gray-700">Đang xác thực...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      {/* Add New Case Button */}
+      <div className="fixed bottom-6 right-6 z-40">
+        <button
+          onClick={() => setShowAddCaseForm(true)}
+          className="flex items-center justify-center w-14 h-14 bg-purple-600 text-white rounded-full shadow-lg hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 transition-transform duration-200 transform hover:scale-105"
+          aria-label="Thêm Case Study Mới"
+        >
+          <PlusCircle className="h-7 w-7" />
+        </button>
+      </div>
+
+      <Dashboard userId={userId} dbInstance={db} showModal={handleShowModal} onEditCase={handleEditCase} />
+      {showModal && (
+        <Modal message={modalMessage} type={modalType} onClose={() => setShowModal(false)} />
+      )}
+      {showAddCaseForm && (
+        <AddCaseForm
+          userId={userId}
+          dbInstance={db}
+          onClose={() => setShowAddCaseForm(false)}
+          showModal={handleShowModal}
+        />
+      )}
+      {editingCase && (
+        <EditCaseForm
+          userId={userId}
+          dbInstance={db}
+          caseData={editingCase}
+          onClose={handleCloseEditForm}
+          showModal={handleShowModal}
+        />
+      )}
+    </div>
+  );
+};
+
+export default App;
